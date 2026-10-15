@@ -1,0 +1,20 @@
+{
+  "name": "hari-wallpaper",
+  "version": "1.0.0",
+  "private": true,
+  "description": "흰 바탕 가운데 3D 아기 고양이 하리가 마우스에 반응하는 라이브 배경화면",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "three": "0.149.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.24.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
