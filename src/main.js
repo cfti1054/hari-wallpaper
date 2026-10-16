@@ -169,6 +169,13 @@ const MEMORY = {
     { name: 'mico', x: 1.75, z: -1.7, turn: -0.35, size: 0.9, phase: 1.7 },
   ],
 };
+// 혼자 오래 있으면 둘 중 하나가 잠깐 찾아온다 (번갈아)
+const VISIT = {
+  idleSeconds: 120,              // 마우스가 이만큼 가만히 있으면 찾아옴
+  repeatSeconds: 300,            // 다음 방문까지 간격
+  look: 1.4, fadeIn: 1.4, hold: 2.6, fadeOut: 2.2, after: 1.6,   // 하리가 먼저 알아채고 → 나타남 → 머묾 → 사라짐 → 여운
+  opacity: 0.3,
+};
 function makeGhosts(geo, base) {
   const loader = new THREE.TextureLoader();
   return MEMORY.cats.map(cfg => {
@@ -207,27 +214,40 @@ function updateGhosts(dt, t) {
   if (st.mem >= 0) {
     const { fadeIn, hold, fadeOut } = MEMORY, m = st.mem += dt, end = fadeIn + hold + fadeOut;
     a = smooth(0, fadeIn, m) * (1 - smooth(fadeIn + hold, end, m));
-    // 나타날 때와 사라질 때 빛 알갱이가 피어오른다
-    const spark = (m < fadeIn ? 1 : 0) + (m > fadeIn + hold ? 1.4 : 0) + 0.25;
-    for (const G of C.ghosts) if (rnd() < dt * 14 * spark) {
-      const k = G.cfg.size;
-      spawnSparkle(new THREE.Vector3((rnd() - 0.5) * 1.6 * k, (0.2 + rnd() * 2.3) * k, (rnd() - 0.5) * 0.8 * k).add(G.g.position));
-    }
     // 가장 또렷해질 때 하리 쪽으로 하트 하나씩
     if (m - dt < fadeIn * 0.9 && m >= fadeIn * 0.9) for (const G of C.ghosts) {
       const p = new THREE.Vector3(); G.bones.head.getWorldPosition(p); spawnHeart(p.add(new THREE.Vector3(-Math.sign(G.cfg.x) * 0.3, 0.45, 0.2)), false);
     }
     if (m >= end) st.mem = -1;
   }
-  st.memA = a;
-  for (const G of C.ghosts) {
+  // 혼자 있을 때 찾아오기
+  let va = 0, look = 0;
+  if (st.visit >= 0) {
+    const V = VISIT, v = st.visit += dt, s = V.look, e = s + V.fadeIn + V.hold + V.fadeOut, end = e + V.after;
+    va = smooth(s, s + V.fadeIn, v) * (1 - smooth(s + V.fadeIn + V.hold, e, v));
+    look = smooth(0, V.look, v) * (1 - smooth(end - 1.4, end, v));
+    // 마주 본 채 천천히 눈을 감았다 뜬다 (고양이의 눈인사)
+    st.slowBlink = v > s + V.fadeIn + 0.6 && v < s + V.fadeIn + 1.5;
+    if (v >= end) { st.visit = -1; st.slowBlink = false; st.visitAt = st.idle + V.repeatSeconds; }
+  }
+  st.memA = a; st.visitLook = look;
+  C.ghosts.forEach((G, i) => {
     const { cfg, g, bones: B } = G, ph = t * 0.9 + cfg.phase;
-    g.visible = a > 0.002;
-    if (!g.visible) continue;
-    G.mat.opacity = MEMORY.opacity * a;
+    const visiting = st.visit >= 0 && i === st.visitCat ? va : 0;
+    const alpha = Math.max(MEMORY.opacity * a, VISIT.opacity * visiting);
+    g.visible = alpha > 0.002;
+    if (!g.visible) return;
+    G.mat.opacity = alpha;
+    // 나타날 때와 사라질 때 빛 알갱이가 피어오른다
+    const spark = a > 0 ? (st.mem < MEMORY.fadeIn ? 1 : 0) + (st.mem > MEMORY.fadeIn + MEMORY.hold ? 1.4 : 0) + 0.25 : 0.5;
+    if (rnd() < dt * 14 * spark * Math.min(1, alpha / 0.2)) {
+      const k = cfg.size;
+      spawnSparkle(new THREE.Vector3((rnd() - 0.5) * 1.6 * k, (0.2 + rnd() * 2.3) * k, (rnd() - 0.5) * 0.8 * k).add(g.position));
+    }
     // 아래에서 살짝 떠오르고, 사라질 땐 위로 올라가며 흩어진다
-    const out = st.mem > MEMORY.fadeIn + MEMORY.hold ? st.mem - MEMORY.fadeIn - MEMORY.hold : 0;
-    g.position.y = (reduceMotion ? 0.12 : 0.12 + Math.sin(ph) * 0.04) - (1 - smooth(0, MEMORY.fadeIn, st.mem)) * 0.2 + out * 0.12;
+    const rise = a > 0 ? smooth(0, MEMORY.fadeIn, st.mem) : smooth(VISIT.look, VISIT.look + VISIT.fadeIn, st.visit);
+    const out = a > 0 ? Math.max(0, st.mem - MEMORY.fadeIn - MEMORY.hold) : Math.max(0, st.visit - VISIT.look - VISIT.fadeIn - VISIT.hold);
+    g.position.y = (reduceMotion ? 0.12 : 0.12 + Math.sin(ph) * 0.04) - (1 - rise) * 0.2 + out * 0.12;
     // 하리 쪽으로 고개를 기울이고, 꼬리를 천천히 흔든다
     const toward = -Math.sign(cfg.x);
     B.head.rotation.set(0.05 + Math.sin(ph * 0.7) * 0.03, toward * 0.18, toward * -0.12 + Math.sin(ph * 0.5) * 0.04, 'YXZ');
@@ -235,7 +255,7 @@ function updateGhosts(dt, t) {
     B.tail2.rotation.set(-0.15, Math.sin(ph * 1.6) * 0.16, Math.sin(ph * 1.6 + 1) * 0.1);
     const breath = reduceMotion ? 0 : Math.sin(t * 1.8 + cfg.phase) * 0.012;
     B.spine.scale.set(1 + breath * 0.6, 1 + breath, 1 + breath * 0.6);
-  }
+  });
   for (let i = sparkles.length - 1; i >= 0; i--) {
     const p = sparkles[i]; p.t += dt;
     p.s.position.y += dt * 0.32; p.s.position.x += p.vx * dt;
@@ -355,12 +375,13 @@ const st = {
   yaw: 0, pitch: 0, tilt: 0, earBack: 0, wag: 0, wagAmp: 0.15, wagSpeed: 3,
   sq: 0, sqv: 0, hsq: 0, hsqv: 0, y: 0, vy: 0, air: false, blink: 0, nextBlink: 2, curious: 0, heartT: 0, face: 'open',
   petTime: 0, mem: -1, memA: 0,   // 마고·미코: 쓰다듬은 시간, 나타난 뒤 지난 시간(-1이면 없음), 진하기
+  visit: -1, visitCat: -1, visitAt: VISIT.idleSeconds, visitLook: 0, slowBlink: false,   // 찾아오기
 };
 const ray = new THREE.Raycaster(), ndc = new THREE.Vector2(), tmp = new THREE.Vector3();
 let C = null; // 캐릭터
 const SCALE = 2.62 / 0.906;
 
-function setPointer(x, y, down) { st.px = x; st.py = y; st.down = down; st.inside = true; st.idle = 0; }
+function setPointer(x, y, down) { st.px = x; st.py = y; st.down = down; st.inside = true; st.idle = 0; if (st.visit < 0) st.visitAt = VISIT.idleSeconds; }
 function leave() { st.inside = false; st.down = false; st.lastPX = null; }
 function doClick() {
   if (st.hover) {
@@ -418,7 +439,9 @@ function step(dt) {
   if (st.hover && !hintGone && !MANUAL) { hintGone = true; hintEl.classList.add('gone'); }
   // 오래 쓰다듬으면 마고·미코가 나타난다 (나타나 있는 동안엔 다시 쌓지 않음)
   if (st.mem < 0) st.petTime = petting ? st.petTime + dt : Math.max(0, st.petTime - dt * 0.5);
-  if (st.mem < 0 && C.ghosts && st.petTime >= MEMORY.petSeconds) { st.mem = 0; st.petTime = 0; }
+  if (st.mem < 0 && C.ghosts && st.petTime >= MEMORY.petSeconds) { st.mem = 0; st.petTime = 0; st.visit = -1; st.slowBlink = false; }
+  // 오래 혼자 두면 마고·미코가 번갈아 잠깐 찾아온다
+  if (st.mem < 0 && st.visit < 0 && C.ghosts && st.idle > st.visitAt) { st.visit = 0; st.visitCat = (st.visitCat + 1) % C.ghosts.length; }
 
   if (st.happy && petting && st.hit) { st.heartT -= dt; if (st.heartT <= 0) { st.heartT = 0.32; spawnHeart(st.hit.clone().add(new THREE.Vector3(0, 0.12, 0.25)), false); } }
   for (let i = hearts.length - 1; i >= 0; i--) {
@@ -436,6 +459,8 @@ function step(dt) {
   else { tyaw = Math.sin(t * 0.27) * 0.18 + Math.sin(t * 0.11) * 0.08; tpitch = Math.sin(t * 0.19) * 0.04 - 0.02; }
   if (st.happy) { tpitch = -0.1 + tpitch * 0.3; ttilt = clamp(-st.vx / 1800, -LOOK.tilt, LOOK.tilt) + Math.sin(t * 2.2) * 0.05; tyaw *= 0.4; }
   tpitch = lerp(tpitch, -0.13, st.memA * 0.7); // 마고·미코가 곁에 있는 동안 살짝 올려다봄
+  const visitDir = st.visitLook > 0 ? Math.sign(MEMORY.cats[st.visitCat].x) : 0; // 찾아온 아이 쪽
+  if (visitDir) { tyaw = lerp(tyaw, visitDir * LOOK.yaw, st.visitLook); tpitch = lerp(tpitch, -0.1, st.visitLook); ttilt = lerp(ttilt, visitDir * 0.08, st.visitLook); }
   st.curious = Math.max(0, st.curious - dt);
   if (st.curious > 0) ttilt += 0.18 * smooth(0, 0.3, st.curious) * smooth(1.6, 1.2, 1.6 - st.curious + 1e-4);
   st.yaw = damp(st.yaw, tyaw, st.happy ? 5 : 7, dt); st.pitch = damp(st.pitch, tpitch, 6, dt); st.tilt = damp(st.tilt, ttilt, 5, dt);
@@ -446,7 +471,7 @@ function step(dt) {
   // 표정
   st.nextBlink -= dt; if (st.nextBlink <= 0) { st.blink = 0.15; st.nextBlink = 2.4 + rnd() * 3.5; }
   st.blink = Math.max(0, st.blink - dt);
-  const face = st.happy ? 'happy' : st.blink > 0 ? 'closed' : 'open'; st.face = face;
+  const face = st.happy ? 'happy' : st.blink > 0 || st.slowBlink ? 'closed' : 'open'; st.face = face;
   if (C.faces) {
     C.faces.happy.forEach(m => { m.visible = face === 'happy'; });
     C.faces.closed.forEach(m => { m.visible = face === 'closed'; });
@@ -455,7 +480,7 @@ function step(dt) {
 
   // 귀
   const near = st.inside ? smooth(0.6, 0.15, Math.hypot(st.px - hx, st.py - hy) / Math.min(innerWidth, innerHeight)) : 0;
-  st.earBack = damp(st.earBack, lerp(st.happy ? 1 : (st.hover === 'head' ? 0.55 : -0.3 * near), -0.25, st.memA), 6, dt);
+  st.earBack = damp(st.earBack, lerp(st.happy ? 1 : (st.hover === 'head' ? 0.55 : -0.3 * near), -0.25, Math.max(st.memA, st.visitLook)), 6, dt);
   const flop = Math.sin(t * 6) * 0.05 * (st.happy ? 1 : 0.3);
   const twitch = Math.max(0, Math.sin(t * 0.9) * Math.sin(t * 2.3)) ** 8 * 0.4; // 가끔 귀 쫑긋
   B.earR.rotation.set(-0.4 * st.earBack + twitch * 0.5, 0, -0.25 * Math.max(st.earBack, 0) - flop - twitch * 0.4);
@@ -480,7 +505,7 @@ function step(dt) {
   const breath = reduceMotion ? 0 : Math.sin(t * 2.1) * 0.012;
   B.spine.scale.set(1 + breath * 0.6, 1 + breath, 1 + breath * 0.6);
   C.sway.rotation.z = st.happy ? Math.sin(t * 4.5) * 0.04 : damp(C.sway.rotation.z, 0, 4, dt);
-  C.sway.rotation.y = damp(C.sway.rotation.y, st.yaw * 0.15, 4, dt);
+  C.sway.rotation.y = damp(C.sway.rotation.y, st.yaw * 0.15 + visitDir * 0.32 * st.visitLook, 4, dt); // 찾아온 아이 쪽으로 몸을 돌림
   const lift = clamp(st.y / 1.2, 0, 1); contact.scale.setScalar(1 - lift * 0.35); contact.material.opacity = 1 - lift * 0.6;
   if (C.ghosts) updateGhosts(dt, t);
   renderer.render(scene, camera);
@@ -500,7 +525,7 @@ new GLTFLoader().parse(b64ToBuf(window.CHAR_GLB_B64), '', gltf => {
 }, e => { console.error(e); document.body.insertAdjacentHTML('beforeend', '<div class="err">모델을 불러오지 못했습니다.</div>'); });
 
 if (MANUAL) {
-  window.__frame = (dt, o = {}) => { if (o.mx != null) setPointer(o.mx, o.my, !!o.down); else leave(); if (o.click) doClick(); step(dt); return { hover: st.hover, happy: st.happy, face: st.face, faces: !!(C && C.faces), petTime: st.petTime, mem: st.mem, memA: st.memA }; };
+  window.__frame = (dt, o = {}) => { if (o.mx != null) setPointer(o.mx, o.my, !!o.down); else leave(); if (o.click) doClick(); if (o.visit) st.visitAt = 0; step(dt); return { hover: st.hover, happy: st.happy, face: st.face, faces: !!(C && C.faces), petTime: st.petTime, mem: st.mem, memA: st.memA, visit: st.visit, visitLook: st.visitLook }; };
   window.__anchors = () => { const pr = v => { v.project(camera); return [(v.x + 1) / 2 * innerWidth, (1 - v.y) / 2 * innerHeight]; };
     return { headTop: pr(new THREE.Vector3(-0.15, 2.3, 0.4)), belly: pr(new THREE.Vector3(0, 0.75, 0.75)), head: pr(new THREE.Vector3(-0.1, 1.7, 0.8)) }; };
   window.__ready = true;
