@@ -130,6 +130,20 @@ function rig(src) {
   geo.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(si, 4));
   geo.setAttribute('skinWeight', new THREE.Float32BufferAttribute(sw, 4));
 
+  const om = mesh.material;
+  const mat = new THREE.MeshPhysicalMaterial({
+    map: om.map, normalMap: om.normalMap, normalScale: om.normalScale ? om.normalScale.clone() : new THREE.Vector2(1, 1),
+    roughnessMap: om.roughnessMap, metalnessMap: om.metalnessMap, roughness: om.roughness, metalness: om.metalness,
+    sheen: 0.3, sheenRoughness: 0.5, sheenColor: new THREE.Color('#ffffff'), envMapIntensity: 0.6, side: THREE.DoubleSide,
+  });
+  const { sk, bones } = skinned(geo, mat);
+  sk.castShadow = true; sk.receiveShadow = true;
+  const plain = new THREE.Mesh(geo, mat); // 표정 위치 찾기용 (정지 자세)
+  return { sk, bones, plain, mat, geo };
+}
+
+// 같은 뼈대 구조를 새로 만들어 메시에 묶는다 (하리와 마고·미코가 함께 씀)
+function skinned(geo, mat) {
   const bones = {};
   for (const k of ORDER) {
     const b = new THREE.Bone(); b.name = k;
@@ -138,17 +152,97 @@ function rig(src) {
     b.position.copy(pos); bones[k] = b;
     if (PARENT[k]) bones[PARENT[k]].add(b);
   }
-  const om = mesh.material;
-  const mat = new THREE.MeshPhysicalMaterial({
-    map: om.map, normalMap: om.normalMap, normalScale: om.normalScale ? om.normalScale.clone() : new THREE.Vector2(1, 1),
-    roughnessMap: om.roughnessMap, metalnessMap: om.metalnessMap, roughness: om.roughness, metalness: om.metalness,
-    sheen: 0.3, sheenRoughness: 0.5, sheenColor: new THREE.Color('#ffffff'), envMapIntensity: 0.6, side: THREE.DoubleSide,
-  });
   const sk = new THREE.SkinnedMesh(geo, mat);
   sk.add(bones.root); sk.bind(new THREE.Skeleton(ORDER.map(k => bones[k])));
-  sk.castShadow = true; sk.receiveShadow = true; sk.frustumCulled = false;
-  const plain = new THREE.Mesh(geo, mat); // 표정 위치 찾기용 (정지 자세)
-  return { sk, bones, plain, mat };
+  sk.frustumCulled = false;
+  return { sk, bones };
+}
+
+// ───────── 마고 · 미코 (하늘나라에 간 고양이들. 하리를 오래 쓰다듬으면 뒤에 희미하게 나타났다 사라진다)
+// 세 모델은 같은 원본 메시를 색만 바꾼 것이라, 하리의 메시·뼈대에 털 텍스처만 바꿔 입힌다
+const MEMORY = {
+  petSeconds: 5,                 // 이만큼 쓰다듬으면 나타남 (쉬면 조금씩 줄어듦)
+  fadeIn: 2.2, hold: 4.5, fadeOut: 3,
+  opacity: 0.42,                 // 가장 진할 때 불투명도
+  cats: [                        // x, z: 하리 뒤 위치 / turn: 몸 방향 / size: 하리 대비 크기
+    { name: 'mago', x: -1.6, z: -1.6, turn: 0.45, size: 0.92, phase: 0 },
+    { name: 'mico', x: 1.75, z: -1.7, turn: -0.35, size: 0.9, phase: 1.7 },
+  ],
+};
+function makeGhosts(geo, base) {
+  const loader = new THREE.TextureLoader();
+  return MEMORY.cats.map(cfg => {
+    const map = loader.load(window.GHOST_TEX[cfg.name]);
+    map.flipY = false; map.encoding = THREE.sRGBEncoding; map.anisotropy = 4;
+    const mat = new THREE.MeshStandardMaterial({
+      map, emissive: 0xffffff, emissiveMap: map, emissiveIntensity: 0.22,
+      normalMap: base.normalMap, normalScale: base.normalScale, roughnessMap: base.roughnessMap, roughness: base.roughness, metalness: 0,
+      envMapIntensity: 0.6, transparent: true, opacity: 0, depthWrite: false,
+    });
+    // 가장자리로 갈수록 투명하게 해 윤곽이 빛에 녹아드는 느낌을 낸다
+    mat.onBeforeCompile = s => {
+      s.fragmentShader = s.fragmentShader.replace('#include <output_fragment>',
+        'float rim = 1.0 - saturate(dot(normal, normalize(vViewPosition)));\n\tdiffuseColor.a *= 1.0 - 0.75 * pow(rim, 1.6);\n#include <output_fragment>');
+    };
+    const { sk, bones } = skinned(geo, mat);
+    // 깊이만 먼저 그려 두어, 반투명해도 몸 안쪽·뒷면이 비쳐 보이지 않게 한다
+    const depth = new THREE.SkinnedMesh(geo, new THREE.MeshBasicMaterial({ colorWrite: false }));
+    depth.bind(sk.skeleton); depth.frustumCulled = false;
+    sk.renderOrder = 1;
+    const g = new THREE.Group(); g.add(depth, sk);
+    g.scale.setScalar(SCALE * cfg.size); g.position.set(cfg.x, 0, cfg.z); g.rotation.y = cfg.turn; g.visible = false;
+    scene.add(g);
+    return { cfg, g, bones, mat };
+  });
+}
+const sparkles = [];
+const SPARK = radialTex([[0, 'rgba(255,214,140,1)'], [0.25, 'rgba(255,200,120,0.55)'], [1, 'rgba(255,190,110,0)']], 64);
+function spawnSparkle(p) {
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: SPARK, transparent: true, depthWrite: false, opacity: 0 }));
+  s.position.copy(p); s.renderOrder = 4; scene.add(s);
+  sparkles.push({ s, t: 0, life: 1.6 + rnd() * 1.2, size: 0.08 + rnd() * 0.1, vx: (rnd() - 0.5) * 0.12, tw: rnd() * 6 });
+}
+function updateGhosts(dt, t) {
+  let a = 0;
+  if (st.mem >= 0) {
+    const { fadeIn, hold, fadeOut } = MEMORY, m = st.mem += dt, end = fadeIn + hold + fadeOut;
+    a = smooth(0, fadeIn, m) * (1 - smooth(fadeIn + hold, end, m));
+    // 나타날 때와 사라질 때 빛 알갱이가 피어오른다
+    const spark = (m < fadeIn ? 1 : 0) + (m > fadeIn + hold ? 1.4 : 0) + 0.25;
+    for (const G of C.ghosts) if (rnd() < dt * 14 * spark) {
+      const k = G.cfg.size;
+      spawnSparkle(new THREE.Vector3((rnd() - 0.5) * 1.6 * k, (0.2 + rnd() * 2.3) * k, (rnd() - 0.5) * 0.8 * k).add(G.g.position));
+    }
+    // 가장 또렷해질 때 하리 쪽으로 하트 하나씩
+    if (m - dt < fadeIn * 0.9 && m >= fadeIn * 0.9) for (const G of C.ghosts) {
+      const p = new THREE.Vector3(); G.bones.head.getWorldPosition(p); spawnHeart(p.add(new THREE.Vector3(-Math.sign(G.cfg.x) * 0.3, 0.45, 0.2)), false);
+    }
+    if (m >= end) st.mem = -1;
+  }
+  st.memA = a;
+  for (const G of C.ghosts) {
+    const { cfg, g, bones: B } = G, ph = t * 0.9 + cfg.phase;
+    g.visible = a > 0.002;
+    if (!g.visible) continue;
+    G.mat.opacity = MEMORY.opacity * a;
+    // 아래에서 살짝 떠오르고, 사라질 땐 위로 올라가며 흩어진다
+    const out = st.mem > MEMORY.fadeIn + MEMORY.hold ? st.mem - MEMORY.fadeIn - MEMORY.hold : 0;
+    g.position.y = (reduceMotion ? 0.12 : 0.12 + Math.sin(ph) * 0.04) - (1 - smooth(0, MEMORY.fadeIn, st.mem)) * 0.2 + out * 0.12;
+    // 하리 쪽으로 고개를 기울이고, 꼬리를 천천히 흔든다
+    const toward = -Math.sign(cfg.x);
+    B.head.rotation.set(0.05 + Math.sin(ph * 0.7) * 0.03, toward * 0.18, toward * -0.12 + Math.sin(ph * 0.5) * 0.04, 'YXZ');
+    B.tail.rotation.set(-0.1, Math.sin(ph * 1.2) * 0.06, 0);
+    B.tail2.rotation.set(-0.15, Math.sin(ph * 1.6) * 0.16, Math.sin(ph * 1.6 + 1) * 0.1);
+    const breath = reduceMotion ? 0 : Math.sin(t * 1.8 + cfg.phase) * 0.012;
+    B.spine.scale.set(1 + breath * 0.6, 1 + breath, 1 + breath * 0.6);
+  }
+  for (let i = sparkles.length - 1; i >= 0; i--) {
+    const p = sparkles[i]; p.t += dt;
+    p.s.position.y += dt * 0.32; p.s.position.x += p.vx * dt;
+    p.s.scale.setScalar(p.size * (0.7 + 0.3 * Math.sin(p.t * 5 + p.tw)));
+    p.s.material.opacity = 0.85 * smooth(0, 0.3, p.t) * (1 - smooth(p.life * 0.5, p.life, p.t));
+    if (p.t > p.life) { scene.remove(p.s); p.s.material.dispose(); sparkles.splice(i, 1); }
+  }
 }
 
 // ───────── 눈꺼풀 (눈 위에 털빛 눈꺼풀 데칼: 감은 눈 · 웃는 눈)
@@ -260,6 +354,7 @@ const st = {
   idle: 99, pet: 0, happy: false, hover: null, hit: null,
   yaw: 0, pitch: 0, tilt: 0, earBack: 0, wag: 0, wagAmp: 0.15, wagSpeed: 3,
   sq: 0, sqv: 0, hsq: 0, hsqv: 0, y: 0, vy: 0, air: false, blink: 0, nextBlink: 2, curious: 0, heartT: 0, face: 'open',
+  petTime: 0, mem: -1, memA: 0,   // 마고·미코: 쓰다듬은 시간, 나타난 뒤 지난 시간(-1이면 없음), 진하기
 };
 const ray = new THREE.Raycaster(), ndc = new THREE.Vector2(), tmp = new THREE.Vector3();
 let C = null; // 캐릭터
@@ -321,6 +416,9 @@ function step(dt) {
   if (!st.happy && st.pet > 0.38) st.happy = true;
   if (st.happy && st.pet < 0.15) st.happy = false;
   if (st.hover && !hintGone && !MANUAL) { hintGone = true; hintEl.classList.add('gone'); }
+  // 오래 쓰다듬으면 마고·미코가 나타난다 (나타나 있는 동안엔 다시 쌓지 않음)
+  if (st.mem < 0) st.petTime = petting ? st.petTime + dt : Math.max(0, st.petTime - dt * 0.5);
+  if (st.mem < 0 && C.ghosts && st.petTime >= MEMORY.petSeconds) { st.mem = 0; st.petTime = 0; }
 
   if (st.happy && petting && st.hit) { st.heartT -= dt; if (st.heartT <= 0) { st.heartT = 0.32; spawnHeart(st.hit.clone().add(new THREE.Vector3(0, 0.12, 0.25)), false); } }
   for (let i = hearts.length - 1; i >= 0; i--) {
@@ -337,6 +435,7 @@ function step(dt) {
   if (st.inside && st.idle < 6) { const s = Math.min(innerWidth, innerHeight); tyaw = LOOK.yaw * Math.tanh((st.px - hx) / s * 2.2); tpitch = (st.py > hy ? LOOK.down : LOOK.up) * Math.tanh((st.py - hy) / s * 2.4); }
   else { tyaw = Math.sin(t * 0.27) * 0.18 + Math.sin(t * 0.11) * 0.08; tpitch = Math.sin(t * 0.19) * 0.04 - 0.02; }
   if (st.happy) { tpitch = -0.1 + tpitch * 0.3; ttilt = clamp(-st.vx / 1800, -LOOK.tilt, LOOK.tilt) + Math.sin(t * 2.2) * 0.05; tyaw *= 0.4; }
+  tpitch = lerp(tpitch, -0.13, st.memA * 0.7); // 마고·미코가 곁에 있는 동안 살짝 올려다봄
   st.curious = Math.max(0, st.curious - dt);
   if (st.curious > 0) ttilt += 0.18 * smooth(0, 0.3, st.curious) * smooth(1.6, 1.2, 1.6 - st.curious + 1e-4);
   st.yaw = damp(st.yaw, tyaw, st.happy ? 5 : 7, dt); st.pitch = damp(st.pitch, tpitch, 6, dt); st.tilt = damp(st.tilt, ttilt, 5, dt);
@@ -356,7 +455,7 @@ function step(dt) {
 
   // 귀
   const near = st.inside ? smooth(0.6, 0.15, Math.hypot(st.px - hx, st.py - hy) / Math.min(innerWidth, innerHeight)) : 0;
-  st.earBack = damp(st.earBack, st.happy ? 1 : (st.hover === 'head' ? 0.55 : -0.3 * near), 6, dt);
+  st.earBack = damp(st.earBack, lerp(st.happy ? 1 : (st.hover === 'head' ? 0.55 : -0.3 * near), -0.25, st.memA), 6, dt);
   const flop = Math.sin(t * 6) * 0.05 * (st.happy ? 1 : 0.3);
   const twitch = Math.max(0, Math.sin(t * 0.9) * Math.sin(t * 2.3)) ** 8 * 0.4; // 가끔 귀 쫑긋
   B.earR.rotation.set(-0.4 * st.earBack + twitch * 0.5, 0, -0.25 * Math.max(st.earBack, 0) - flop - twitch * 0.4);
@@ -383,23 +482,25 @@ function step(dt) {
   C.sway.rotation.z = st.happy ? Math.sin(t * 4.5) * 0.04 : damp(C.sway.rotation.z, 0, 4, dt);
   C.sway.rotation.y = damp(C.sway.rotation.y, st.yaw * 0.15, 4, dt);
   const lift = clamp(st.y / 1.2, 0, 1); contact.scale.setScalar(1 - lift * 0.35); contact.material.opacity = 1 - lift * 0.6;
+  if (C.ghosts) updateGhosts(dt, t);
   renderer.render(scene, camera);
 }
 
 // ───────── 모델 불러오기
 function b64ToBuf(s) { const bin = atob(s); const u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return u.buffer; }
 new GLTFLoader().parse(b64ToBuf(window.CHAR_GLB_B64), '', gltf => {
-  const { sk, bones, plain, mat } = rig(gltf.scene);
+  const { sk, bones, plain, mat, geo } = rig(gltf.scene);
   const r = new THREE.Group(); const sway = new THREE.Group(); const g = new THREE.Group();
   g.scale.setScalar(SCALE); g.position.y = 0; g.add(sk); sway.add(g); r.add(sway); scene.add(r);
   g.updateMatrixWorld(true);
   let faces = null; try { faces = buildFaces(plain, mat, bones.head); } catch (e) { console.warn('표정 만들기 실패', e); }
-  C = { rig: r, sway, group: g, bones, mat, faces, proxies: proxies(bones) };
+  let ghosts = null; try { if (window.GHOST_TEX) ghosts = makeGhosts(geo, mat); } catch (e) { console.warn('마고·미코 만들기 실패', e); }
+  C = { rig: r, sway, group: g, bones, mat, faces, ghosts, proxies: proxies(bones) };
   window.__loaded = true;
 }, e => { console.error(e); document.body.insertAdjacentHTML('beforeend', '<div class="err">모델을 불러오지 못했습니다.</div>'); });
 
 if (MANUAL) {
-  window.__frame = (dt, o = {}) => { if (o.mx != null) setPointer(o.mx, o.my, !!o.down); else leave(); if (o.click) doClick(); step(dt); return { hover: st.hover, happy: st.happy, face: st.face, faces: !!(C && C.faces) }; };
+  window.__frame = (dt, o = {}) => { if (o.mx != null) setPointer(o.mx, o.my, !!o.down); else leave(); if (o.click) doClick(); step(dt); return { hover: st.hover, happy: st.happy, face: st.face, faces: !!(C && C.faces), petTime: st.petTime, mem: st.mem, memA: st.memA }; };
   window.__anchors = () => { const pr = v => { v.project(camera); return [(v.x + 1) / 2 * innerWidth, (1 - v.y) / 2 * innerHeight]; };
     return { headTop: pr(new THREE.Vector3(-0.15, 2.3, 0.4)), belly: pr(new THREE.Vector3(0, 0.75, 0.75)), head: pr(new THREE.Vector3(-0.1, 1.7, 0.8)) }; };
   window.__ready = true;

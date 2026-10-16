@@ -12,6 +12,7 @@
 | 클릭하면 | 폴짝 점프 + 하트 |
 | 빈 곳을 클릭하면 | 고개를 갸웃 |
 | 가만히 두면 | 숨쉬기, 눈 깜빡임, 가끔 귀 쫑긋, 두리번거리기 |
+| 5초쯤 계속 쓰다듬으면 | 하리 뒤에 하늘나라에 간 마고·미코가 희미하게 나타나 하리 쪽으로 고개를 기울였다가 빛 알갱이가 되어 사라짐 |
 
 시연 영상: [docs/demo.mp4](docs/demo.mp4)
 
@@ -22,6 +23,8 @@ index.html            완성본 (모델·3D 엔진 포함, 인터넷 없이 동�
 src/main.js           자동 뼈대(머리·귀·꼬리), 눈꺼풀, 마우스 반응 코드
 src/shell.html        페이지 틀 (스타일, 안내 문구, 출처 표기)
 assets/character.glb  3D 모델 (단순화·압축본)
+assets/mago.jpg       마고 털 텍스처 (하리 메시에 바꿔 입힘)
+assets/mico.jpg       미코 털 텍스처
 build.mjs             src + assets → index.html 묶는 스크립트
 server.mjs            Railway 배포용 정적 서버 (npm start)
 docs/                 미리보기 이미지와 시연 영상
@@ -57,6 +60,7 @@ npm run build     # index.html 새로 생성
 | 눈꺼풀 위치·크기 | `EYES` (모델 좌표 기준 눈 중심과 반지름) |
 | 쓰다듬기 민감도 | `st.pet` 계산 부분 (`dt * 1.3`) |
 | 점프 높이 | `doClick()` 의 `st.vy = 4.4` |
+| 마고·미코 | `MEMORY` (나타나기까지 쓰다듬는 시간 `petSeconds`, 나타남·머묾·사라짐 시간, 진하기 `opacity`, 위치 `cats`) |
 
 ## Railway 배포
 

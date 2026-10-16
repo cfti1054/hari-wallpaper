@@ -6,9 +6,11 @@ const res = await build({ entryPoints: ['src/main.js'], bundle: true, format: 'i
 const js = res.outputFiles[0].text;
 if (js.toLowerCase().includes('</script')) throw new Error('번들 안에 </script 문자열이 있어 HTML에 넣을 수 없습니다');
 const glb = readFileSync('assets/character.glb').toString('base64');
+// 마고·미코 털 텍스처 (하리와 같은 메시에 바꿔 입힘)
+const ghosts = Object.fromEntries(['mago', 'mico'].map(k => [k, 'data:image/jpeg;base64,' + readFileSync(`assets/${k}.jpg`).toString('base64')]));
 const shell = readFileSync('src/shell.html', 'utf8');
 
-const body = `${shell}\n<script>window.CHAR_GLB_B64="${glb}";</script>\n<script>${js}</script>\n`;
+const body = `${shell}\n<script>window.CHAR_GLB_B64="${glb}";window.GHOST_TEX=${JSON.stringify(ghosts)};</script>\n<script>${js}</script>\n`;
 const html = `<!doctype html>
 <html lang="ko">
 <head>
