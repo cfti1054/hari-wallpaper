@@ -3,6 +3,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { DecalGeometry } from 'three/examples/jsm/geometries/DecalGeometry.js';
+import { LETTER } from './letter.js';
 
 const qs = new URLSearchParams(location.search);
 const MANUAL = qs.has('manual');
@@ -387,6 +388,8 @@ function updateGhosts(dt, t) {
     const breath = reduceMotion ? 0 : Math.sin(t * 1.8 + cfg.phase) * 0.012;
     B.spine.scale.set(1 + breath * 0.6, 1 + breath, 1 + breath * 0.6);
   });
+}
+function updateSparkles(dt) {
   for (let i = sparkles.length - 1; i >= 0; i--) {
     const p = sparkles[i]; p.t += dt;
     p.s.position.y += dt * 0.32; p.s.position.x += p.vx * dt;
@@ -394,6 +397,164 @@ function updateGhosts(dt, t) {
     p.s.material.opacity = 0.85 * smooth(0, 0.3, p.t) * (1 - smooth(p.life * 0.5, p.life, p.t));
     if (p.t > p.life) { scene.remove(p.s); p.s.material.dispose(); sparkles.splice(i, 1); }
   }
+}
+
+// ───────── 네잎클로버 모형 (집어서 하리에게 가져다주면 하리가 기뻐하고 편지가 열린다)
+const CLOVER = {
+  home: [-1.45, 1.15],           // 놓여 있는 자리 (x, z)
+  size: 1.3,                     // 크기 배율
+  hold: 0.5,                     // 들었을 때 들어 올리는 높이
+  giveR: 1.6,                    // 하리 몸 중심에서 이 거리 안에 놓으면 건네줌
+  at: [-0.32, 0.62, 1.12],       // 건넨 뒤 머무는 자리 (하리 앞발 앞, x·y·z)
+  letterDelay: 1.7,              // 건넨 뒤 편지가 열리기까지 (초)
+};
+const clover = (() => {
+  const S = CLOVER.size, L = 0.2 * S, g = new THREE.Group(), head = new THREE.Group();
+  // 잎 무늬: 끝(가운데 쪽)은 짙고 바깥은 밝은 초록, 하얀 V 무늬와 잎맥
+  const c = document.createElement('canvas'); c.width = c.height = 256; const x = c.getContext('2d');
+  const gr = x.createLinearGradient(0, 256, 0, 0); gr.addColorStop(0, '#1f6a2c'); gr.addColorStop(0.55, '#3c9443'); gr.addColorStop(1, '#5cb455');
+  x.fillStyle = gr; x.fillRect(0, 0, 256, 256);
+  x.filter = 'blur(5px)'; x.strokeStyle = 'rgba(214,242,190,0.45)'; x.lineWidth = 16; x.lineJoin = 'round';
+  x.beginPath(); x.moveTo(50, 112); x.lineTo(128, 160); x.lineTo(206, 112); x.stroke(); x.filter = 'none';
+  x.strokeStyle = 'rgba(200,236,176,0.55)'; x.lineWidth = 3; x.beginPath(); x.moveTo(128, 256); x.lineTo(128, 62); x.stroke();
+  x.lineWidth = 1.4; x.strokeStyle = 'rgba(200,236,176,0.3)';
+  for (let i = 0; i < 5; i++) { const y = 220 - i * 32; for (const s of [-1, 1]) { x.beginPath(); x.moveTo(128, y); x.quadraticCurveTo(128 + s * 30, y - 20, 128 + s * 62, y - 52); x.stroke(); } }
+  const map = new THREE.CanvasTexture(c); map.encoding = THREE.sRGBEncoding; map.anisotropy = 4;
+  const leafMat = new THREE.MeshPhysicalMaterial({ map, roughness: 0.55, sheen: 0.25, sheenRoughness: 0.6, sheenColor: new THREE.Color('#d6f5c8'),
+    clearcoat: 0.3, clearcoatRoughness: 0.45, side: THREE.DoubleSide, envMapIntensity: 0.55 });
+  // 하트 모양 잎 (뾰족한 끝이 가운데, 위로 갈라진 두 볼)
+  const sh = new THREE.Shape(); sh.moveTo(0, 0);
+  sh.bezierCurveTo(-0.25 * L, 0.12 * L, -0.58 * L, 0.42 * L, -0.52 * L, 0.72 * L); sh.bezierCurveTo(-0.46 * L, 1.0 * L, -0.1 * L, 1.02 * L, 0, 0.8 * L);
+  sh.bezierCurveTo(0.1 * L, 1.02 * L, 0.46 * L, 1.0 * L, 0.52 * L, 0.72 * L); sh.bezierCurveTo(0.58 * L, 0.42 * L, 0.25 * L, 0.12 * L, 0, 0);
+  const leafGeo = new THREE.ExtrudeGeometry(sh, { depth: 0.008 * S, bevelEnabled: true, bevelThickness: 0.006 * S, bevelSize: 0.006 * S, bevelSegments: 2, curveSegments: 28 });
+  const lp = leafGeo.attributes.position, uv = leafGeo.attributes.uv;
+  for (let i = 0; i < lp.count; i++) {
+    const px = lp.getX(i), py = lp.getY(i);
+    uv.setXY(i, px / L + 0.5, py / L);
+    lp.setZ(i, lp.getZ(i) + Math.abs(px) / L * 0.05 * S - py / L * 0.015 * S); // 잎맥을 따라 살짝 접힌 잎
+  }
+  leafGeo.computeVertexNormals();
+  for (let i = 0; i < 4; i++) {
+    const pivot = new THREE.Group(); pivot.rotation.z = Math.PI / 4 + i * Math.PI / 2;
+    const leaf = new THREE.Mesh(leafGeo, leafMat); leaf.rotation.x = 0.14; leaf.castShadow = true; pivot.add(leaf); head.add(pivot);
+  }
+  const knot = new THREE.Mesh(new THREE.SphereGeometry(0.022 * S, 16, 12), new THREE.MeshStandardMaterial({ color: '#3d8443', roughness: 0.6 }));
+  knot.position.z = 0.012 * S; head.add(knot);
+  // 줄기 · 받침 (작은 원목 받침에 이끼를 얹고 꽂아 둔 모형)
+  const top = 0.44 * S;
+  const stemCurve = new THREE.CatmullRomCurve3([[0, 0.04, 0], [0.018, 0.16, -0.012], [-0.012, 0.3, 0.01], [0, top, 0.02]].map(p => new THREE.Vector3(p[0] * S, p[1] * S, p[2] * S)));
+  const stem = new THREE.Mesh(new THREE.TubeGeometry(stemCurve, 24, 0.011 * S, 8), new THREE.MeshStandardMaterial({ color: '#5c9c4c', roughness: 0.55 }));
+  stem.castShadow = true; g.add(stem);
+  const base = new THREE.Mesh(new THREE.CylinderGeometry(0.12 * S, 0.13 * S, 0.035 * S, 40), new THREE.MeshStandardMaterial({ color: '#e9d4b8', roughness: 0.7 }));
+  base.position.y = 0.0175 * S; base.castShadow = true; g.add(base);
+  const moss = new THREE.Mesh(new THREE.SphereGeometry(0.075 * S, 20, 10, 0, Math.PI * 2, 0, Math.PI / 2), new THREE.MeshStandardMaterial({ color: '#7cae5e', roughness: 0.95 }));
+  moss.scale.y = 0.45; moss.position.y = 0.035 * S; g.add(moss);
+  head.position.set(0, top, 0.02 * S); head.rotation.x = -0.3; g.add(head);
+  // 은은한 빛 (집을 수 있는 물건임을 알려 줌)
+  const glow = new THREE.Sprite(new THREE.SpriteMaterial({ map: radialTex([[0, 'rgba(255,246,190,0.9)'], [0.4, 'rgba(220,255,190,0.35)'], [1, 'rgba(220,255,190,0)']], 128),
+    transparent: true, depthWrite: false, opacity: 0.4 }));
+  glow.position.set(0, top - 0.03 * S, -0.2 * S); glow.scale.setScalar(0.7 * S); glow.renderOrder = -1; g.add(glow);
+  const hit = new THREE.Mesh(new THREE.SphereGeometry(0.3 * S, 12, 8), new THREE.MeshBasicMaterial({ visible: false }));
+  hit.position.y = 0.3 * S; hit.userData.part = 'clover'; g.add(hit);
+  const shadow = new THREE.Mesh(new THREE.PlaneGeometry(0.5 * S, 0.5 * S), new THREE.MeshBasicMaterial({
+    map: radialTex([[0, 'rgba(60,45,30,0.32)'], [1, 'rgba(60,45,30,0)']], 64), transparent: true, depthWrite: false }));
+  shadow.rotation.x = -Math.PI / 2; shadow.position.y = 0.003; scene.add(shadow);
+  g.position.set(CLOVER.home[0], 0, CLOVER.home[1]); scene.add(g);
+  // mode: rest(바닥에 놓임) · held(들고 있음) · fall(떨어지는 중) · give(하리에게 감) · gift(하리 앞에 머묾) · back(제자리로 돌아감)
+  return { g, head, hit, glow, shadow, held: false, mode: 'rest', t: 0, v: new THREE.Vector3(), from: new THREE.Vector3(), near: 0, look: 0 };
+})();
+const cloverPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), cloverAim = new THREE.Vector3(), cloverPrev = new THREE.Vector3(), cloverTo = new THREE.Vector3();
+let letterOpen = false;
+function updateClover(dt, grab) {
+  const K = clover, p = K.g.position, rp = C.rig.position, t = st.t;
+  if (grab && (K.mode === 'rest' || K.mode === 'fall')) { K.held = true; K.mode = 'held'; K.t = 0; }
+  const dist = Math.hypot(p.x - rp.x, p.z - rp.z);
+  K.t += dt;
+  if (K.mode === 'held') {
+    cloverPrev.copy(p); cloverPlane.constant = -CLOVER.hold;
+    if (ray.ray.intersectPlane(cloverPlane, cloverAim)) {
+      cloverAim.z = clamp(cloverAim.z, TOY.zMin, TOY.zMax); const xb = toyBound(cloverAim.z); cloverAim.x = clamp(cloverAim.x, -xb, xb);
+      // 하리 곁에선 늘 하리 앞쪽에 오게 하고 (얼굴 위로 끌어도 뒤로 숨지 않게), 몸 안으로는 들어가지 않게
+      if (Math.hypot(cloverAim.x - rp.x, cloverAim.z - rp.z) < CLOVER.giveR + 0.4) cloverAim.z = Math.max(cloverAim.z, rp.z + 0.9);
+      const ax = cloverAim.x - rp.x, az = cloverAim.z - rp.z, ad = Math.hypot(ax, az), min = 1.2;
+      if (ad < min) { const k = ad < 1e-4 ? 0 : min / ad; cloverAim.x = rp.x + (ad < 1e-4 ? 0 : ax * k); cloverAim.z = rp.z + (ad < 1e-4 ? min : az * k); }
+      p.x = damp(p.x, cloverAim.x, 16, dt); p.z = damp(p.z, cloverAim.z, 16, dt);
+    }
+    p.y = damp(p.y, CLOVER.hold + Math.sin(t * 3) * 0.02, 10, dt);
+    // 끄는 방향으로 살랑 기울어짐
+    const vx = (p.x - cloverPrev.x) / dt, vz = (p.z - cloverPrev.z) / dt;
+    K.g.rotation.z = damp(K.g.rotation.z, clamp(-vx * 0.05, -0.45, 0.45), 8, dt); K.g.rotation.x = damp(K.g.rotation.x, clamp(vz * 0.05, -0.4, 0.4), 8, dt);
+    if (!st.down) { // 놓음: 하리 곁이면 건네주고, 아니면 그 자리에 떨어짐
+      K.held = false;
+      if (dist < CLOVER.giveR) { K.mode = 'give'; K.t = 0; K.from.copy(p); st.gift = 0; }
+      else { K.mode = 'fall'; K.v.set(0, 0, 0); }
+    }
+  } else if (K.mode === 'fall') {
+    K.v.y -= 14 * dt; p.y += K.v.y * dt;
+    if (p.y <= 0) { p.y = 0; K.v.y = K.v.y < -1 ? -K.v.y * 0.3 : 0; if (!K.v.y) K.mode = 'rest'; }
+  } else if (K.mode === 'give' || K.mode === 'back') { // 빙그르 돌며 포물선을 그리며 날아감
+    const dur = K.mode === 'give' ? 0.8 : 1.1, k = smooth(0, dur, K.t);
+    if (K.mode === 'give') cloverTo.set(...CLOVER.at); else cloverTo.set(CLOVER.home[0], 0, CLOVER.home[1]);
+    p.lerpVectors(K.from, cloverTo, k); p.y += Math.sin(k * Math.PI) * (K.mode === 'give' ? 0.35 : 0.6);
+    K.g.rotation.y = k * Math.PI * 2;
+    if (rnd() < dt * 18) spawnSparkle(K.head.getWorldPosition(new THREE.Vector3()).add(new THREE.Vector3((rnd() - 0.5) * 0.3, (rnd() - 0.5) * 0.3, 0.05)));
+    if (K.t >= dur) { K.g.rotation.y = 0; K.t = 0; K.mode = K.mode === 'give' ? 'gift' : 'rest'; if (K.mode === 'rest') st.gift = -1; }
+  } else if (K.mode === 'gift') { // 하리 앞에 둥실 떠 있음
+    p.set(CLOVER.at[0], CLOVER.at[1] + (reduceMotion ? 0 : Math.sin(K.t * 2) * 0.03), CLOVER.at[2]);
+  }
+  if (K.mode !== 'held') { K.g.rotation.z = damp(K.g.rotation.z, 0, 6, dt); K.g.rotation.x = damp(K.g.rotation.x, 0, 6, dt); }
+  // 하리에게 건넨 뒤: 기뻐하고, 잠시 뒤 편지가 열린다
+  if (st.gift >= 0) {
+    const g0 = st.gift; st.gift += dt; const g1 = st.gift;
+    if (g0 < 0.35 && g1 >= 0.35) {
+      st.pet = 1; if (!st.air) { st.vy = 3.2; st.air = true; st.sqv += 4; }
+      for (let i = 0; i < 8; i++) spawnHeart(new THREE.Vector3(-0.1 + (rnd() - 0.5) * 0.9, 2.0 + rnd() * 0.4, 0.8), true);
+    }
+    if (!letterOpen && K.mode === 'gift') st.pet = Math.max(st.pet, 0.7);
+    if (g0 < CLOVER.letterDelay && g1 >= CLOVER.letterDelay) {
+      for (let i = 0; i < 16; i++) spawnSparkle(K.head.getWorldPosition(new THREE.Vector3()).add(new THREE.Vector3((rnd() - 0.5) * 0.6, (rnd() - 0.3) * 0.6, 0.1)));
+      openLetter();
+    }
+  }
+  // 하리가 클로버를 바라보고, 가까이 가져오면 앞발을 내민다
+  K.near = damp(K.near, K.held && dist < CLOVER.giveR + 0.2 ? 1 : 0, 5, dt);
+  K.look = damp(K.look, K.held || K.mode === 'give' || K.mode === 'gift' ? 1 : 0, K.held ? 5 : 2, dt);
+  // 잎이 바람에 하늘거리고, 빛이 숨 쉬듯 일렁인다 (하리 곁에선 더 밝게)
+  K.head.rotation.z = reduceMotion ? 0 : Math.sin(t * 1.3) * 0.05; K.head.rotation.y = reduceMotion ? 0 : Math.sin(t * 0.9 + 1) * 0.08;
+  K.glow.material.opacity = (0.22 + 0.1 * Math.sin(t * 2.2)) * (K.mode === 'rest' ? 1 : 0.6) + K.near * 0.5;
+  K.glow.scale.setScalar(CLOVER.size * (0.7 + K.near * 0.35));
+  const lift = clamp(p.y / 1.2, 0, 0.7);
+  K.shadow.position.set(p.x, 0.003, p.z); K.shadow.scale.setScalar(1 - lift * 0.4); K.shadow.material.opacity = 1 - lift;
+}
+
+// ───────── 편지 (src/letter.js 내용을 봉투 → 편지지 순서로 보여 준다)
+const letterEl = document.getElementById('letter');
+let letterTimers = [];
+function openLetter() {
+  if (!letterEl || letterOpen) return;
+  letterOpen = true; leave();
+  letterEl.querySelector('.l-to').textContent = LETTER.to || '';
+  const body = letterEl.querySelector('.l-body'); body.replaceChildren(...(LETTER.body || []).map(s => { const p = document.createElement('p'); p.textContent = s; return p; }));
+  body.scrollTop = 0;
+  letterEl.querySelector('.l-date').textContent = LETTER.date || '';
+  letterEl.querySelector('.l-from').textContent = LETTER.from || '';
+  letterEl.hidden = false; letterEl.className = 'letter'; void letterEl.offsetWidth;
+  const steps = reduceMotion ? [['show flap rise read', 0]] : [['show', 30], ['show flap', 800], ['show flap rise', 1400], ['show flap rise read', 2300]];
+  letterTimers = steps.map(([cls, ms]) => setTimeout(() => { letterEl.className = 'letter ' + cls; }, ms));
+  letterTimers.push(setTimeout(() => letterEl.querySelector('.l-close').focus({ preventScroll: true }), (reduceMotion ? 0 : 2300) + 400));
+}
+function closeLetter() {
+  if (!letterOpen || !letterEl.classList.contains('read')) return;
+  letterTimers.forEach(clearTimeout); letterEl.className = 'letter';
+  letterTimers = [setTimeout(() => { letterEl.hidden = true; }, 600)];
+  letterOpen = false;
+  // 클로버는 반짝이며 제자리로 돌아간다
+  clover.mode = 'back'; clover.t = 0; clover.from.copy(clover.g.position);
+}
+if (letterEl) {
+  letterEl.querySelector('.l-close').addEventListener('click', closeLetter);
+  letterEl.addEventListener('click', e => { if (!e.target.closest('.card')) closeLetter(); });
+  addEventListener('keydown', e => { if (e.key === 'Escape') closeLetter(); });
 }
 
 // ───────── 눈꺼풀 (눈 위에 털빛 눈꺼풀 데칼: 감은 눈 · 웃는 눈)
@@ -508,6 +669,7 @@ const st = {
   petTime: 0, mem: -1, memA: 0,   // 마고·미코: 쓰다듬은 시간, 나타난 뒤 지난 시간(-1이면 없음), 진하기
   visit: -1, visitCat: -1, visitAt: VISIT.idleSeconds, visitLook: 0, slowBlink: false,   // 찾아오기
   wasDown: false, toyLook: 0, pounce: '', pT: 0, pCool: 0, hopTo: new THREE.Vector2(),     // 털실 놀이
+  gift: -1,   // 네잎클로버를 건넨 뒤 지난 시간 (-1이면 없음)
   hOff: [0, 0, 0], shut: false, swat: -1, swatDir: 1, swatCool: 0, swatToy: false, fidget: '', fT: 0, fidgetAt: 6, // 팔다리
 };
 const ray = new THREE.Raycaster(), ndc = new THREE.Vector2(), tmp = new THREE.Vector3();
@@ -517,7 +679,7 @@ const SCALE = 2.62 / 0.906;
 function setPointer(x, y, down) { st.px = x; st.py = y; st.down = down; st.inside = true; st.idle = 0; if (st.visit < 0) st.visitAt = VISIT.idleSeconds; }
 function leave() { st.inside = false; st.down = false; st.lastPX = null; }
 function doClick() {
-  if (toy.held || st.hover === 'toy') return; // 털실은 놓을 때 updateToy 가 처리
+  if (toy.held || st.hover === 'toy' || clover.held || st.hover === 'clover' || st.gift >= 0) return; // 털실은 놓을 때 updateToy 가 처리
   if (st.hover) {
     if (!st.air) { st.vy = 4.4; st.air = true; st.sqv += 5; }
     const p = st.hit ? st.hit.clone() : new THREE.Vector3(0, 1.9, 0.6);
@@ -527,9 +689,9 @@ function doClick() {
 }
 if (!MANUAL) {
   let downAt = 0, x0 = 0, y0 = 0;
-  addEventListener('pointermove', e => setPointer(e.clientX, e.clientY, st.down), { passive: true });
-  addEventListener('pointerdown', e => { setPointer(e.clientX, e.clientY, true); downAt = performance.now(); x0 = e.clientX; y0 = e.clientY; });
-  addEventListener('pointerup', e => { setPointer(e.clientX, e.clientY, false); if (performance.now() - downAt < 350 && Math.hypot(e.clientX - x0, e.clientY - y0) < 12) doClick(); });
+  addEventListener('pointermove', e => letterOpen || setPointer(e.clientX, e.clientY, st.down), { passive: true });
+  addEventListener('pointerdown', e => { if (letterOpen) return; setPointer(e.clientX, e.clientY, true); downAt = performance.now(); x0 = e.clientX; y0 = e.clientY; });
+  addEventListener('pointerup', e => { if (letterOpen) return; setPointer(e.clientX, e.clientY, false); if (performance.now() - downAt < 350 && Math.hypot(e.clientX - x0, e.clientY - y0) < 12) doClick(); });
   document.addEventListener('pointerleave', leave); addEventListener('blur', leave);
 }
 let hintGone = false;
@@ -561,21 +723,24 @@ function step(dt) {
   if (st.inside) {
     C.group.updateMatrixWorld(true);
     ndc.set(st.px / innerWidth * 2 - 1, -(st.py / innerHeight) * 2 + 1); ray.setFromCamera(ndc, camera);
-    const h = ray.intersectObjects([...C.proxies, toy.hit], false)[0];
+    const h = ray.intersectObjects([...C.proxies, toy.hit, clover.hit], false)[0];
     if (h) { st.hover = h.object.userData.part; st.hit = h.point; }
   }
   if (toy.held) st.hover = 'toy';
+  if (clover.held) st.hover = 'clover';
   renderer.domElement.style.cursor = st.hover ? (st.down ? 'grabbing' : 'grab') : 'default';
   const pressed = st.down && !st.wasDown; st.wasDown = st.down;
   updateToy(dt, pressed && st.hover === 'toy', st.hover === 'toy' ? st.hit : null);
-  const onCat = (st.hover === 'head' || st.hover === 'body') && !toy.held;
+  updateClover(dt, pressed && st.hover === 'clover');
+  const busy = clover.held || st.gift >= 0; // 네잎클로버를 들고 있거나 건네는 중
+  const onCat = (st.hover === 'head' || st.hover === 'body') && !toy.held && !busy;
 
   // 털실 놀이: 굴러가는 털실을 지켜보다 가까이 오면 엉덩이를 씰룩이고 덮쳐 앞발로 툭 친 뒤 제자리로 돌아온다
   const tp = toy.g.position, rp = C.rig.position;
   const tdx = tp.x - rp.x, tdz = tp.z - rp.z, tdist = Math.hypot(tdx, tdz) || 1e-3;
   st.toyLook = damp(st.toyLook, toy.quiet < 2.5 ? 1 : 0, toy.quiet < 2.5 ? 6 : 1.5, dt);
   st.pCool = Math.max(0, st.pCool - dt);
-  if (!st.pounce && st.pCool <= 0 && toy.energy > 0 && !toy.held && !st.air && !st.happy && st.mem < 0 && st.toyLook > 0.5
+  if (!st.pounce && st.pCool <= 0 && toy.energy > 0 && !toy.held && !busy && !st.air && !st.happy && st.mem < 0 && st.toyLook > 0.5
       && tp.y < TOY.r + 0.05 && tdist < TOY.reach && Math.hypot(toy.v.x, toy.v.z) < 2.5 && Math.hypot(rp.x, rp.z) < 0.08) { st.pounce = 'crouch'; st.pT = 0; }
   if (st.pounce) {
     st.pT += dt;
@@ -628,6 +793,11 @@ function step(dt) {
     const [ya, pa] = lookAtScreen((tmp.x + 1) / 2 * innerWidth, (1 - tmp.y) / 2 * innerHeight);
     tyaw = lerp(tyaw, ya, st.toyLook); tpitch = lerp(tpitch, pa, st.toyLook);
   }
+  if (clover.look > 0.01) { // 네잎클로버를 눈으로 좇는다
+    clover.head.getWorldPosition(tmp).project(camera);
+    const [ya, pa] = lookAtScreen((tmp.x + 1) / 2 * innerWidth, (1 - tmp.y) / 2 * innerHeight);
+    tyaw = lerp(tyaw, ya, clover.look); tpitch = lerp(tpitch, pa, clover.look);
+  }
   if (st.happy) { tpitch = -0.1 + tpitch * 0.3; ttilt = clamp(-st.vx / 1800, -LOOK.tilt, LOOK.tilt) + Math.sin(t * 2.2) * 0.05; tyaw *= 0.4; }
   tpitch = lerp(tpitch, -0.13, st.memA * 0.7); // 마고·미코가 곁에 있는 동안 살짝 올려다봄
   const visitDir = st.visitLook > 0 ? Math.sign(MEMORY.cats[st.visitCat].x) : 0; // 찾아온 아이 쪽
@@ -650,7 +820,7 @@ function step(dt) {
 
   // 귀
   const near = st.inside ? smooth(0.6, 0.15, Math.hypot(st.px - hx, st.py - hy) / Math.min(innerWidth, innerHeight)) : 0;
-  const earT = st.happy ? 1 : lerp(st.hover === 'head' ? 0.55 : -0.3 * near, -0.4, st.toyLook * 0.8); // 털실을 볼 땐 귀를 앞으로 쫑긋
+  const earT = st.happy ? 1 : lerp(st.hover === 'head' ? 0.55 : -0.3 * near, -0.4, Math.max(st.toyLook * 0.8, clover.look * 0.9)); // 털실을 볼 땐 귀를 앞으로 쫑긋
   st.earBack = damp(st.earBack, lerp(earT, -0.25, Math.max(st.memA, st.visitLook)), 6, dt);
   const flop = Math.sin(t * 6) * 0.05 * (st.happy ? 1 : 0.3);
   const twitch = Math.max(0, Math.sin(t * 0.9) * Math.sin(t * 2.3)) ** 8 * 0.4; // 가끔 귀 쫑긋
@@ -663,7 +833,7 @@ function step(dt) {
   st.wagSpeed = damp(st.wagSpeed, st.happy ? 9 : st.pounce ? 12 : st.toyLook > 0.5 ? 6 : near > 0.3 ? 4 : 2, 3, dt);
   st.wagAmp = damp(st.wagAmp, st.happy ? 0.18 : st.pounce ? 0.3 : st.toyLook > 0.5 ? 0.22 : near > 0.3 ? 0.25 : 0.15, 3, dt);
   st.wag += dt * st.wagSpeed;
-  st.tailUp = damp(st.tailUp || 0, st.happy ? 1 : 0, 3, dt);
+  st.tailUp = damp(st.tailUp || 0, st.happy ? 1 : clover.near * 0.8, 3, dt);
   // 뿌리는 바닥 쪽 꼬리를 좌우로 쓸고, 선 부분은 옆으로 흔들고, 끝은 한 박자 늦게 따라온다
   B.tail.rotation.set(-0.15 * st.tailUp, Math.sin(st.wag * 0.5) * st.wagAmp * 0.5, 0);
   B.tail2.rotation.set(-0.2 * st.tailUp + Math.sin(st.wag * 0.8) * 0.04, 0, Math.sin(st.wag) * st.wagAmp * 0.9);
@@ -708,6 +878,10 @@ function step(dt) {
     add('chest', -0.05 * k); add('armR', -0.3 - 0.1 * k); add('armL', -0.15 - 0.1 * k); add('forearmL', 0.1 + 0.1 * k); add('pawL', -0.1 * k);
     add('legR', 0.05 + 0.08 * k); add('legL', 0.05 + 0.08 * k); limbK = 10;
   }
+  if (clover.near > 0.01) { // 네잎클로버를 가까이 가져오면 받으려고 앞발을 내밀고 몸을 앞으로
+    const k = clover.near;
+    add('shoulderR', -0.08 * k); add('armR', -0.3 * k); add('pawR', -0.2 * k); add('chest', -0.04 * k); H[0] += 0.05 * k;
+  }
   if (st.happy && petting) { // 꾹꾹이: 앞발을 번갈아 누르고, 어깨·가슴이 따라 흔들림
     const s = Math.sin(t * 4.2), a = Math.max(0, s), b = Math.max(0, -s);
     add('armR', 0.3 - 0.4 * a); add('pawR', 0.2 * a); add('shoulderR', -0.06 * a);
@@ -718,7 +892,7 @@ function step(dt) {
   st.swatCool = Math.max(0, st.swatCool - dt);
   B.pawR.getWorldPosition(tmp).project(camera);
   const pawX = (tmp.x + 1) / 2 * innerWidth, pawY = (1 - tmp.y) / 2 * innerHeight;
-  const swatOk = st.swat < 0 && st.swatCool <= 0 && !st.happy && !st.pounce && !st.air && !toy.held && !st.fidget;
+  const swatOk = st.swat < 0 && st.swatCool <= 0 && !st.happy && !st.pounce && !st.air && !toy.held && !busy && !st.fidget;
   if (swatOk && st.inside && st.hover !== 'head' && !st.down && st.speed > 500 && Math.hypot(st.px - pawX, st.py - pawY) < ss * 0.16) { st.swat = 0; st.swatDir = Math.sign(st.px - pawX) || 1; st.swatToy = false; }
   else if (swatOk && tdist < TOY.catR + TOY.r + 0.25 && toy.quiet > 0.8 && toy.quiet < 6) { st.swat = 0; st.swatDir = Math.sign(tdx) || 1; st.swatToy = true; }
   if (st.swat >= 0) { // 어깨를 끌어올려 치켜들었다가, 가슴을 비틀며 휘두른다
@@ -780,6 +954,7 @@ function step(dt) {
   const lift = clamp(st.y / 1.2, 0, 1); contact.scale.setScalar(1 - lift * 0.35); contact.material.opacity = 1 - lift * 0.6;
   contact.position.x = rp.x; contact.position.z = rp.z;
   if (C.ghosts) updateGhosts(dt, t);
+  updateSparkles(dt);
   renderer.render(scene, camera);
 }
 
@@ -797,10 +972,10 @@ new GLTFLoader().parse(b64ToBuf(window.CHAR_GLB_B64), '', gltf => {
 }, e => { console.error(e); document.body.insertAdjacentHTML('beforeend', '<div class="err">모델을 불러오지 못했습니다.</div>'); });
 
 if (MANUAL) {
-  window.__frame = (dt, o = {}) => { if (o.mx != null) setPointer(o.mx, o.my, !!o.down); else leave(); if (o.click) doClick(); if (o.visit) st.visitAt = 0; if (o.fidget) { st.fidget = o.fidget; st.fT = 0; } step(dt); return { hover: st.hover, happy: st.happy, face: st.face, faces: !!(C && C.faces), petTime: st.petTime, mem: st.mem, memA: st.memA, visit: st.visit, visitLook: st.visitLook, toyHeld: toy.held, pounce: st.pounce, swat: st.swat >= 0, fidget: st.fidget }; };
+  window.__frame = (dt, o = {}) => { if (o.mx != null) setPointer(o.mx, o.my, !!o.down); else leave(); if (o.click) doClick(); if (o.visit) st.visitAt = 0; if (o.fidget) { st.fidget = o.fidget; st.fT = 0; } step(dt); return { hover: st.hover, happy: st.happy, face: st.face, faces: !!(C && C.faces), petTime: st.petTime, mem: st.mem, memA: st.memA, visit: st.visit, visitLook: st.visitLook, toyHeld: toy.held, clover: clover.mode, gift: st.gift, letter: letterOpen, pounce: st.pounce, swat: st.swat >= 0, fidget: st.fidget }; };
   window.__anchors = () => { const pr = v => { v.project(camera); return [(v.x + 1) / 2 * innerWidth, (1 - v.y) / 2 * innerHeight]; };
     return { headTop: pr(new THREE.Vector3(-0.15, 2.3, 0.4)), belly: pr(new THREE.Vector3(0, 0.75, 0.75)), head: pr(new THREE.Vector3(-0.1, 1.7, 0.8)),
-      toy: pr(toy.g.position.clone()), paw: pr(C.bones.pawR.getWorldPosition(new THREE.Vector3())), floor: (x, z) => pr(new THREE.Vector3(x, TOY.r + TOY.hold, z)) }; };
+      toy: pr(toy.g.position.clone()), clover: pr(clover.hit.getWorldPosition(new THREE.Vector3())), cloverFloor: (x, z) => pr(new THREE.Vector3(x, CLOVER.hold + 0.3, z)), paw: pr(C.bones.pawR.getWorldPosition(new THREE.Vector3())), floor: (x, z) => pr(new THREE.Vector3(x, TOY.r + TOY.hold, z)) }; };
   window.__ready = true;
 } else {
   let last = performance.now();
